@@ -1,4 +1,4 @@
-# E2E Encrypted Client-Server
+# E2E Encrypted Client-Server Message Queue
 
 ## Client - Listener & Dialer
 

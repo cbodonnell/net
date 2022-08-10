@@ -3,41 +3,12 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"os"
 )
 
 var tcpAddress string
-
-func copyWorker(dst io.Writer, src io.Reader, doneCh chan<- bool) {
-	io.Copy(dst, src)
-	doneCh <- true
-}
-
-func handleRequest(src net.Conn) {
-	dst, err := net.Dial("tcp", tcpAddress)
-	if err != nil {
-		log.Println("dial:", err.Error())
-		return
-	}
-
-	doneCh := make(chan bool)
-
-	go copyWorker(dst, src, doneCh)
-	go copyWorker(src, dst, doneCh)
-
-	<-doneCh
-	dst.Close()
-	src.Close()
-	<-doneCh
-}
-
-func usage() {
-	fmt.Fprintf(os.Stderr, "Usage: %s <tcpTargetAddress>\n", os.Args[0])
-	flag.PrintDefaults()
-}
 
 func main() {
 	var port uint
@@ -63,8 +34,6 @@ func main() {
 	log.Printf("Listening on %s\n", portString)
 	log.Printf("Relaying to %s\n", tcpAddress)
 
-	// Listen on TCP port 2000 on all available unicast and
-	// anycast IP addresses of the local system.
 	l, err := net.Listen("tcp", portString)
 	if err != nil {
 		log.Fatal("Error listening:", err.Error())
@@ -72,13 +41,64 @@ func main() {
 	defer l.Close()
 	for {
 		// Wait for a connection.
-		conn, err := l.Accept()
+		clientConn, err := l.Accept()
 		if err != nil {
 			log.Fatal("Error accepting: ", err.Error())
 		}
 		// Handle the connection in a new goroutine.
 		// The loop then returns to accepting, so that
 		// multiple connections may be served concurrently.
-		go handleRequest(conn)
+		go handleRequest(clientConn)
+	}
+}
+
+func usage() {
+	fmt.Fprintf(os.Stderr, "Usage: %s <tcpTargetAddress>\n", os.Args[0])
+	flag.PrintDefaults()
+}
+
+func handleRequest(clientConn net.Conn) {
+	defer clientConn.Close()
+
+	// read data from the client
+	buf := make([]byte, 1024)
+	reqLen, err := clientConn.Read(buf)
+	if err != nil {
+		log.Println("Error reading from client:", err.Error())
+	}
+
+	msg := buf[:reqLen]
+
+	log.Printf("Received message with %d bytes:\n%s\n", reqLen, string(msg))
+
+	// connect to the relay server
+	relayConn, err := net.Dial("tcp", tcpAddress)
+	if err != nil {
+		log.Println("dial:", err.Error())
+		return
+	}
+	defer relayConn.Close()
+
+	// write data to the destination
+	_, err = relayConn.Write(msg)
+	if err != nil {
+		log.Println("Error writing to relay:", err.Error())
+	}
+
+	// read response from the destination
+	buf = make([]byte, 1024)
+	reqLen, err = relayConn.Read(buf)
+	if err != nil {
+		log.Println("Error reading from relay:", err.Error())
+	}
+
+	response := buf[:reqLen]
+
+	log.Printf("Received response with %d bytes:\n%s\n", reqLen, string(response))
+
+	// copy response to the source
+	_, err = clientConn.Write(response)
+	if err != nil {
+		log.Println("Error writing to client:", err.Error())
 	}
 }
