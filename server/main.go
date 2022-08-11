@@ -19,8 +19,8 @@ func main() {
 	// var certFile string
 	// var keyFile string
 
-	flag.UintVar(&port, "p", 3333, "The port to listen on")
-	flag.UintVar(&port, "port", 3333, "The port to listen on")
+	flag.UintVar(&port, "p", 5555, "The port to listen on")
+	flag.UintVar(&port, "port", 5555, "The port to listen on")
 	// flag.StringVar(&certFile, "tlscert", "", "TLS cert file path")
 	// flag.StringVar(&keyFile, "tlskey", "", "TLS key file path")
 	// flag.BoolVar(&binaryMode, "b", false, "Use binary frames instead of text frames")

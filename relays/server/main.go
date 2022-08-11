@@ -35,17 +35,20 @@ func main() {
 		log.Fatal("No server address specified")
 	}
 
+	log.Printf("Fetching from %s\n", relayAddress)
+	log.Printf("Relaying to %s\n", serverAddress)
+
+	done := make(chan bool)
+
 	responseChan := make(chan []byte)
 	messageChan := make(chan []byte)
 
 	go func(responseChan chan []byte, messageChan chan<- []byte) {
-		responseChan <- []byte("init")
+		response := []byte("init")
 		defer close(messageChan)
 		for {
-			// wait for a response to the message
-			response := <-responseChan
-
 			// connect to the relay server
+			log.Println("Connecting to relay server")
 			relayConn, err := net.Dial("tcp", relayAddress)
 			if err != nil {
 				log.Println("dial:", err.Error())
@@ -53,13 +56,8 @@ func main() {
 			}
 			defer relayConn.Close()
 
-			// send the response to the relay server
-			_, err = relayConn.Write(response)
-			if err != nil {
-				log.Println("Error writing to relay:", err.Error())
-			}
-
 			// wait for a message from the relay server
+			log.Println("Waiting for message from relay server")
 			buf := make([]byte, 1024)
 			reqLen, err := relayConn.Read(buf)
 			if err != nil {
@@ -68,7 +66,20 @@ func main() {
 			message := buf[:reqLen]
 
 			// send the message to the server
+			log.Println("Sending message to server application")
 			messageChan <- message
+
+			// wait for a response to the message
+			log.Println("waiting for response from server application")
+			response = <-responseChan
+			log.Printf("Received response with %d bytes:\n%s\n", len(response), string(response))
+
+			// send the response to the relay server
+			log.Println("Sending response to relay server")
+			_, err = relayConn.Write(response)
+			if err != nil {
+				log.Println("Error writing to relay:", err.Error())
+			}
 		}
 	}(responseChan, messageChan)
 
@@ -76,9 +87,13 @@ func main() {
 		defer close(responseChan)
 		for {
 			// get a message from the relay server
+			log.Println("TO_SERVER: Waiting for message for server application")
 			message := <-messageChan
+			log.Printf("Received message with %d bytes:\n%s\n", len(message), string(message))
 
 			// connect to the server
+
+			log.Println("TO_SERVER: Connecting to the server application")
 			serverConn, err := net.Dial("tcp", serverAddress)
 			if err != nil {
 				log.Println("dial:", err.Error())
@@ -87,12 +102,14 @@ func main() {
 			defer serverConn.Close()
 
 			// send the message to the server
+			log.Println("TO_SERVER: Sending message to the server application")
 			_, err = serverConn.Write(message)
 			if err != nil {
 				log.Println("Error writing to server:", err.Error())
 			}
 
 			// wait for a response from the server
+			log.Println("TO_SERVER: Waiting for a response from the server application")
 			buf := make([]byte, 1024)
 			reqLen, err := serverConn.Read(buf)
 			if err != nil {
@@ -102,12 +119,15 @@ func main() {
 			response := buf[:reqLen]
 
 			// send the response to the relay server
+			log.Println("TO_SERVER: Sending response to the relay server")
 			responseChan <- response
 		}
 	}(responseChan, messageChan)
+
+	<-done
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, "Usage: %s <tcpTargetAddress>\n", os.Args[0])
+	fmt.Fprintf(os.Stderr, "Usage: %s <relayAddress> <serverAddress>\n", os.Args[0])
 	flag.PrintDefaults()
 }

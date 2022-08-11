@@ -29,6 +29,8 @@ func main() {
 	flag.Usage = usage
 	flag.Parse()
 
+	done := make(chan bool)
+
 	clientPortString := fmt.Sprintf(":%d", clientPort)
 	log.Printf("Listening for client on %s\n", clientPortString)
 
@@ -63,7 +65,7 @@ func main() {
 	go func(serverListener net.Listener, messageQueue chan Message) {
 		defer serverListener.Close()
 
-		responseQueue := make(chan chan []byte)
+		// responseQueue := make(chan chan []byte)
 
 		for {
 			// Listen for an incoming connections from the server.
@@ -72,9 +74,11 @@ func main() {
 				log.Fatal("Error accepting from server: ", err.Error())
 			}
 			// Handle connections from the server in a new goroutine.
-			go handleServerRequest(conn, messageQueue, responseQueue)
+			go handleServerRequest(conn, messageQueue)
 		}
 	}(serverListener, messageQueue)
+
+	<-done
 }
 
 func usage() {
@@ -88,6 +92,7 @@ func handleClientRequest(conn net.Conn, queue chan<- Message) {
 	defer conn.Close()
 
 	// Make a buffer to hold incoming data.
+	log.Println("CLIENT: Reading from client")
 	buf := make([]byte, 1024)
 	// Read the incoming connection into the buffer.
 	reqLen, err := conn.Read(buf)
@@ -99,15 +104,18 @@ func handleClientRequest(conn net.Conn, queue chan<- Message) {
 		Data:     buf[:reqLen],
 		Response: make(chan []byte),
 	}
-	log.Printf("Received message with %d bytes:\n%s\n", reqLen, string(message.Data))
+	log.Printf("CLIENT: Received message with %d bytes:\n%s\n", reqLen, string(message.Data))
 
 	// add message to the queue
+	log.Println("CLIENT: Adding message to queue")
 	queue <- message
 
 	// wait for a response to the message
+	log.Println("CLIENT: Waiting for a response")
 	response := <-message.Response
 
 	// Send a response back to person contacting us.
+	log.Println("CLIENT: Sending response to client")
 	_, err = conn.Write(response)
 	if err != nil {
 		log.Println("Error writing:", err.Error())
@@ -115,24 +123,28 @@ func handleClientRequest(conn net.Conn, queue chan<- Message) {
 }
 
 // Handles incoming requests from the server component.
-func handleServerRequest(conn net.Conn, messageQueue <-chan Message, responseQueue chan chan []byte) {
+func handleServerRequest(conn net.Conn, messageQueue <-chan Message) {
 	// Close the connection when you're done with it.
 	defer conn.Close()
 
+	log.Println("SERVER: Reading from message queue")
 	message := <-messageQueue
 
-	log.Printf("Found message with %d bytes:\n%s\n", len(message.Data), string(message.Data))
+	log.Printf("SERVER: Found message with %d bytes:\n%s\n", len(message.Data), string(message.Data))
 
 	// Send the message data to the server component.
+	log.Println("SERVER: Sending message to server")
 	_, err := conn.Write(message.Data)
 	if err != nil {
 		log.Println("Error writing to server:", err.Error())
 	}
 
-	// add the response channel for this message to the reponse queue
-	responseQueue <- message.Response
+	// // add the response channel for this message to the reponse queue
+	// log.Println("SERVER: Adding response channel to response queue")
+	// responseQueue <- message.Response
 
 	// Make a buffer to hold incoming data.
+	log.Println("SERVER: Reading from server")
 	buf := make([]byte, 1024)
 	// Read the incoming connection into the buffer.
 	reqLen, err := conn.Read(buf)
@@ -141,13 +153,14 @@ func handleServerRequest(conn net.Conn, messageQueue <-chan Message, responseQue
 	}
 
 	response := buf[:reqLen]
-	log.Printf("Received response with %d bytes:\n%s\n", reqLen, string(response))
+	log.Printf("SERVER: Received response with %d bytes:\n%s\n", reqLen, string(response))
 
 	if bytes.Equal(response, []byte("init")) {
 		// if the response is the init message, no need to send it back to the client
+		log.Println("SERVER: Received init message, not sending response to client")
 		return
 	}
 	// data was received from the server, respond to client
-	responseChan := <-responseQueue
-	responseChan <- response
+	// responseChan := <-responseQueue
+	message.Response <- response
 }
