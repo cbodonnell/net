@@ -6,8 +6,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"os/signal"
-	"time"
 
 	"github.com/cbodonnell/tcp-queue/pkg/crypto"
 )
@@ -45,30 +43,26 @@ func main() {
 	log.Printf("Listening on %s\n", portString)
 	log.Printf("Relaying to %s\n", tcpAddress)
 
-	go func() {
-		for {
-			// Wait for a connection.
-			clientConn, err := l.Accept()
-			if err != nil {
-				log.Fatal("Error accepting: ", err.Error())
-			}
+	aesCipher, err := crypto.NewAESCipher(crypto.AESCipherOpts{Key: key})
+	if err != nil {
+		log.Fatal("Error creating cipher:", err.Error())
+	}
 
-			// Handle the connection in a new goroutine.
-			// The loop then returns to accepting, so that
-			// multiple connections may be served concurrently.
-			err = handleRequest(clientConn)
+	for {
+		// Wait for a connection.
+		clientConn, err := l.Accept()
+		if err != nil {
+			log.Fatal("Error accepting: ", err.Error())
+		}
+
+		// Handle the connection in a new goroutine.
+		go func() {
+			err = handleRequest(clientConn, aesCipher)
 			if err != nil {
 				log.Println("Error handling request:", err.Error())
-				log.Println("Restarting listener in 1 second")
-				time.Sleep(time.Second)
 			}
-		}
-	}()
-
-	// Wait for a signal to quit.
-	interrupt := make(chan os.Signal, 1)
-	signal.Notify(interrupt, os.Interrupt)
-	<-interrupt
+		}()
+	}
 }
 
 func usage() {
@@ -76,25 +70,8 @@ func usage() {
 	flag.PrintDefaults()
 }
 
-func handleRequest(clientConn net.Conn) error {
+func handleRequest(clientConn net.Conn, cipher crypto.Cipher) error {
 	defer clientConn.Close()
-
-	// read data from the client
-	log.Println("Reading from client")
-	buf := make([]byte, 1024)
-	reqLen, err := clientConn.Read(buf)
-	if err != nil {
-		return err
-	}
-
-	msg := buf[:reqLen]
-
-	log.Printf("Received message with %d bytes:\n%s\n", reqLen, string(msg))
-
-	msg, err = crypto.Encrypt(key, msg)
-	if err != nil {
-		return err
-	}
 
 	// connect to the relay server
 	log.Println("Connecting to relay server")
@@ -104,35 +81,5 @@ func handleRequest(clientConn net.Conn) error {
 	}
 	defer relayConn.Close()
 
-	// write data to the destination
-	log.Println("Writing to relay server")
-	_, err = relayConn.Write(msg)
-	if err != nil {
-		return err
-	}
-
-	// read response from the destination
-	log.Println("Reading from relay server")
-	buf = make([]byte, 1024)
-	reqLen, err = relayConn.Read(buf)
-	if err != nil {
-		return err
-	}
-
-	response := buf[:reqLen]
-
-	response, err = crypto.Decrypt(key, response)
-	if err != nil {
-		return err
-	}
-
-	log.Printf("Received response with %d bytes:\n%s\n", reqLen, string(response))
-
-	// copy response to the source
-	_, err = clientConn.Write(response)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return cipher.EncryptRoundTrip(relayConn, clientConn)
 }
