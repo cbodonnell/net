@@ -50,7 +50,7 @@ func main() {
 				log.Fatal("Error accepting from client: ", err.Error())
 			}
 			// Handle connections from the client in a new goroutine.
-			go handleClientRequest(conn, messageQueue)
+			handleClientRequest(conn, messageQueue)
 		}
 	}(clientListener, messageQueue)
 
@@ -74,7 +74,7 @@ func main() {
 				log.Fatal("Error accepting from server: ", err.Error())
 			}
 			// Handle connections from the server in a new goroutine.
-			go handleServerRequest(conn, messageQueue)
+			handleServerRequest(conn, messageQueue)
 		}
 	}(serverListener, messageQueue)
 
@@ -139,10 +139,6 @@ func handleServerRequest(conn net.Conn, messageQueue <-chan Message) {
 		log.Println("Error writing to server:", err.Error())
 	}
 
-	// // add the response channel for this message to the reponse queue
-	// log.Println("SERVER: Adding response channel to response queue")
-	// responseQueue <- message.Response
-
 	// Make a buffer to hold incoming data.
 	log.Println("SERVER: Reading from server")
 	buf := make([]byte, 1024)
@@ -161,6 +157,5 @@ func handleServerRequest(conn net.Conn, messageQueue <-chan Message) {
 		return
 	}
 	// data was received from the server, respond to client
-	// responseChan := <-responseQueue
 	message.Response <- response
 }

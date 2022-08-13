@@ -54,23 +54,19 @@ func main() {
 func handleRequest(conn net.Conn) {
 	// Close the connection when you're done with it.
 	defer conn.Close()
-	for {
-		// Make a buffer to hold incoming data.
-		buf := make([]byte, 1024)
-		// Read the incoming connection into the buffer.
-		reqLen, err := conn.Read(buf)
-		if err != nil {
-			log.Println("Error reading:", err.Error())
-			break
-		}
-		msg := buf[:reqLen]
-		log.Printf("Received %d bytes from %s:\n%s\n", reqLen, conn.RemoteAddr().String(), string(msg))
-		time.Sleep(time.Millisecond * 500)
-		// Send a response back to person contacting us.
-		_, err = conn.Write(msg)
-		if err != nil {
-			log.Println("Error writing:", err.Error())
-			break
-		}
+	// Make a buffer to hold incoming data.
+	buf := make([]byte, 1024)
+	// Read the incoming connection into the buffer.
+	reqLen, err := conn.Read(buf)
+	if err != nil {
+		log.Println("Error reading:", err.Error())
+	}
+	msg := buf[:reqLen]
+	log.Printf("Received %d bytes from %s:\n%s\n", reqLen, conn.RemoteAddr().String(), string(msg))
+	time.Sleep(time.Millisecond * 500)
+	// Send a response back to person contacting us.
+	_, err = conn.Write(msg)
+	if err != nil {
+		log.Println("Error writing:", err.Error())
 	}
 }

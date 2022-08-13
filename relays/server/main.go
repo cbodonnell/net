@@ -6,10 +6,15 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/signal"
+	"time"
+
+	"github.com/cbodonnell/tcp-queue/pkg/crypto"
 )
 
 var relayAddress string
 var serverAddress string
+var key = []byte("passphrasewhichneedstobe32bytes!")
 
 func main() {
 	// var port uint
@@ -38,96 +43,87 @@ func main() {
 	log.Printf("Fetching from %s\n", relayAddress)
 	log.Printf("Relaying to %s\n", serverAddress)
 
-	done := make(chan bool)
-
-	responseChan := make(chan []byte)
-	messageChan := make(chan []byte)
-
-	go func(responseChan chan []byte, messageChan chan<- []byte) {
-		response := []byte("init")
-		defer close(messageChan)
+	go func() {
 		for {
-			// connect to the relay server
-			log.Println("Connecting to relay server")
-			relayConn, err := net.Dial("tcp", relayAddress)
-			if err != nil {
-				log.Println("dial:", err.Error())
-				return
-			}
-			defer relayConn.Close()
-
-			// wait for a message from the relay server
-			log.Println("Waiting for message from relay server")
-			buf := make([]byte, 1024)
-			reqLen, err := relayConn.Read(buf)
-			if err != nil {
-				log.Println("Error reading from relay:", err.Error())
-			}
-			message := buf[:reqLen]
-
-			// send the message to the server
-			log.Println("Sending message to server application")
-			messageChan <- message
-
-			// wait for a response to the message
-			log.Println("waiting for response from server application")
-			response = <-responseChan
-			log.Printf("Received response with %d bytes:\n%s\n", len(response), string(response))
-
-			// send the response to the relay server
-			log.Println("Sending response to relay server")
-			_, err = relayConn.Write(response)
-			if err != nil {
-				log.Println("Error writing to relay:", err.Error())
+			if err := fetchAndRelay(); err != nil {
+				log.Println("Error relaying: ", err.Error())
+				log.Println("Retrying in 1 second")
+				time.Sleep(time.Second)
 			}
 		}
-	}(responseChan, messageChan)
+	}()
 
-	go func(responseChan chan []byte, messageChan <-chan []byte) {
-		defer close(responseChan)
-		for {
-			// get a message from the relay server
-			log.Println("TO_SERVER: Waiting for message for server application")
-			message := <-messageChan
-			log.Printf("Received message with %d bytes:\n%s\n", len(message), string(message))
-
-			// connect to the server
-
-			log.Println("TO_SERVER: Connecting to the server application")
-			serverConn, err := net.Dial("tcp", serverAddress)
-			if err != nil {
-				log.Println("dial:", err.Error())
-				return
-			}
-			defer serverConn.Close()
-
-			// send the message to the server
-			log.Println("TO_SERVER: Sending message to the server application")
-			_, err = serverConn.Write(message)
-			if err != nil {
-				log.Println("Error writing to server:", err.Error())
-			}
-
-			// wait for a response from the server
-			log.Println("TO_SERVER: Waiting for a response from the server application")
-			buf := make([]byte, 1024)
-			reqLen, err := serverConn.Read(buf)
-			if err != nil {
-				log.Println("Error reading from server:", err.Error())
-			}
-
-			response := buf[:reqLen]
-
-			// send the response to the relay server
-			log.Println("TO_SERVER: Sending response to the relay server")
-			responseChan <- response
-		}
-	}(responseChan, messageChan)
-
-	<-done
+	interrupt := make(chan os.Signal, 1)
+	signal.Notify(interrupt, os.Interrupt)
+	<-interrupt
 }
 
 func usage() {
 	fmt.Fprintf(os.Stderr, "Usage: %s <relayAddress> <serverAddress>\n", os.Args[0])
 	flag.PrintDefaults()
+}
+
+func fetchAndRelay() error {
+	// connect to the relay server
+	log.Println("Connecting to relay server")
+	relayConn, err := net.Dial("tcp", relayAddress)
+	if err != nil {
+		return err
+	}
+	defer relayConn.Close()
+
+	// wait for a message from the relay server
+	log.Println("Waiting for message from relay server")
+	buf := make([]byte, 1024)
+	reqLen, err := relayConn.Read(buf)
+	if err != nil {
+		return err
+	}
+	message := buf[:reqLen]
+
+	// Decrypt the message
+	message, err = crypto.Decrypt(key, message)
+	if err != nil {
+		return err
+	}
+
+	// connect to the server
+	log.Println("Connecting to the server application")
+	serverConn, err := net.Dial("tcp", serverAddress)
+	if err != nil {
+		return err
+	}
+	defer serverConn.Close()
+
+	// send the message to the server
+	log.Println("Sending message to the server application")
+	_, err = serverConn.Write(message)
+	if err != nil {
+		return err
+	}
+
+	// wait for a response from the server
+	log.Println("Waiting for a response from the server application")
+	buf = make([]byte, 1024)
+	reqLen, err = serverConn.Read(buf)
+	if err != nil {
+		return err
+	}
+
+	response := buf[:reqLen]
+
+	// Encrypt the response
+	response, err = crypto.Encrypt(key, response)
+	if err != nil {
+		return err
+	}
+
+	// send the response to the relay server
+	log.Println("Sending response to relay server")
+	_, err = relayConn.Write(response)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }

@@ -6,11 +6,14 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/signal"
+	"time"
+
+	"github.com/cbodonnell/tcp-queue/pkg/crypto"
 )
 
 var tcpAddress string
-
-// TODO: Can we pick up the init message from the server here before starting??
+var key = []byte("passphrasewhichneedstobe32bytes!")
 
 func main() {
 	var port uint
@@ -42,18 +45,30 @@ func main() {
 	log.Printf("Listening on %s\n", portString)
 	log.Printf("Relaying to %s\n", tcpAddress)
 
-	for {
-		// Wait for a connection.
-		clientConn, err := l.Accept()
-		if err != nil {
-			log.Fatal("Error accepting: ", err.Error())
-		}
+	go func() {
+		for {
+			// Wait for a connection.
+			clientConn, err := l.Accept()
+			if err != nil {
+				log.Fatal("Error accepting: ", err.Error())
+			}
 
-		// Handle the connection in a new goroutine.
-		// The loop then returns to accepting, so that
-		// multiple connections may be served concurrently.
-		go handleRequest(clientConn)
-	}
+			// Handle the connection in a new goroutine.
+			// The loop then returns to accepting, so that
+			// multiple connections may be served concurrently.
+			err = handleRequest(clientConn)
+			if err != nil {
+				log.Println("Error handling request:", err.Error())
+				log.Println("Restarting listener in 1 second")
+				time.Sleep(time.Second)
+			}
+		}
+	}()
+
+	// Wait for a signal to quit.
+	interrupt := make(chan os.Signal, 1)
+	signal.Notify(interrupt, os.Interrupt)
+	<-interrupt
 }
 
 func usage() {
@@ -61,7 +76,7 @@ func usage() {
 	flag.PrintDefaults()
 }
 
-func handleRequest(clientConn net.Conn) {
+func handleRequest(clientConn net.Conn) error {
 	defer clientConn.Close()
 
 	// read data from the client
@@ -69,19 +84,23 @@ func handleRequest(clientConn net.Conn) {
 	buf := make([]byte, 1024)
 	reqLen, err := clientConn.Read(buf)
 	if err != nil {
-		log.Println("Error reading from client:", err.Error())
+		return err
 	}
 
 	msg := buf[:reqLen]
 
 	log.Printf("Received message with %d bytes:\n%s\n", reqLen, string(msg))
 
+	msg, err = crypto.Encrypt(key, msg)
+	if err != nil {
+		return err
+	}
+
 	// connect to the relay server
 	log.Println("Connecting to relay server")
 	relayConn, err := net.Dial("tcp", tcpAddress)
 	if err != nil {
-		log.Println("dial:", err.Error())
-		return
+		return err
 	}
 	defer relayConn.Close()
 
@@ -89,7 +108,7 @@ func handleRequest(clientConn net.Conn) {
 	log.Println("Writing to relay server")
 	_, err = relayConn.Write(msg)
 	if err != nil {
-		log.Println("Error writing to relay:", err.Error())
+		return err
 	}
 
 	// read response from the destination
@@ -97,16 +116,23 @@ func handleRequest(clientConn net.Conn) {
 	buf = make([]byte, 1024)
 	reqLen, err = relayConn.Read(buf)
 	if err != nil {
-		log.Println("Error reading from relay:", err.Error())
+		return err
 	}
 
 	response := buf[:reqLen]
+
+	response, err = crypto.Decrypt(key, response)
+	if err != nil {
+		return err
+	}
 
 	log.Printf("Received response with %d bytes:\n%s\n", reqLen, string(response))
 
 	// copy response to the source
 	_, err = clientConn.Write(response)
 	if err != nil {
-		log.Println("Error writing to client:", err.Error())
+		return err
 	}
+
+	return nil
 }
