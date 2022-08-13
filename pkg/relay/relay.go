@@ -35,6 +35,7 @@ func NewRelay(opts RelayOpts) *Relay {
 type Message struct {
 	Data     []byte
 	Response chan []byte
+	Error    chan error
 }
 
 func (r Relay) Run() error {
@@ -78,21 +79,18 @@ func (r Relay) Run() error {
 	}
 }
 
-func (r *Relay) handleClientConnections(clientListener net.Listener, messageQueue chan Message, errChan chan<- error) {
+func (r *Relay) handleClientConnections(clientListener net.Listener, messageQueue chan Message, errChan chan<- error) error {
 	defer clientListener.Close()
 	for {
 		// Listen for an incoming connections from the client.
 		conn, err := clientListener.Accept()
 		if err != nil {
-			errChan <- fmt.Errorf("error accepting from server: %s", err.Error())
+			errChan <- fmt.Errorf("error accepting from client: %s", err.Error())
 		}
-		// Handle connections from the client in a new goroutine.
-		// TODO: Is this necessary or even a good idea?
-		go func() {
-			if err = r.handleClientRequest(conn, messageQueue); err != nil {
-				log.Printf("error handling client request: %s", err.Error())
-			}
-		}()
+		// Handle connections from the client.
+		if err = r.handleClientRequest(conn, messageQueue); err != nil {
+			fmt.Fprintf(os.Stderr, "error handling client request: %s", err.Error())
+		}
 	}
 }
 
@@ -114,6 +112,7 @@ func (r *Relay) handleClientRequest(conn net.Conn, queue chan<- Message) error {
 	message := Message{
 		Data:     buf[:reqLen],
 		Response: make(chan []byte),
+		Error:    make(chan error),
 	}
 	if r.debug {
 		log.Printf("CLIENT: Received message with %d bytes:\n%s\n", reqLen, string(message.Data))
@@ -129,7 +128,13 @@ func (r *Relay) handleClientRequest(conn net.Conn, queue chan<- Message) error {
 	if r.debug {
 		log.Println("CLIENT: Waiting for a response")
 	}
-	response := <-message.Response
+
+	var response []byte
+	select {
+	case response = <-message.Response:
+	case err = <-message.Error:
+		return fmt.Errorf("server returned an error: %s", err.Error())
+	}
 
 	if r.debug {
 		log.Printf("CLIENT: Received response with %d bytes:\n%s\n", len(response), string(response))
@@ -147,7 +152,7 @@ func (r *Relay) handleClientRequest(conn net.Conn, queue chan<- Message) error {
 	return nil
 }
 
-func (r *Relay) handleServerConnections(serverListener net.Listener, messageQueue chan Message, errChan chan<- error) {
+func (r *Relay) handleServerConnections(serverListener net.Listener, messageQueue chan Message, errChan chan<- error) error {
 	defer serverListener.Close()
 	for {
 		// Listen for an incoming connections from the server.
@@ -155,21 +160,24 @@ func (r *Relay) handleServerConnections(serverListener net.Listener, messageQueu
 		if err != nil {
 			errChan <- fmt.Errorf("error accepting from server: %s", err.Error())
 		}
+
+		if r.debug {
+			log.Println("SERVER: Reading from message queue")
+		}
+		message := <-messageQueue
+
 		// Handle connections from the server.
-		if err = r.handleServerRequest(conn, messageQueue); err != nil {
-			log.Printf("error handling server request: %s", err.Error())
+		if err = r.handleServerRequest(conn, message); err != nil {
+			// return fmt.Errorf("error handling server request: %s", err.Error())
+			message.Error <- fmt.Errorf("error handling server request: %s", err.Error())
+			fmt.Fprintf(os.Stderr, "error handling server request: %s", err.Error())
 		}
 	}
 }
 
-func (r *Relay) handleServerRequest(conn net.Conn, messageQueue <-chan Message) error {
+func (r *Relay) handleServerRequest(conn net.Conn, message Message) error {
 	// Close the connection when you're done with it.
 	defer conn.Close()
-
-	if r.debug {
-		log.Println("SERVER: Reading from message queue")
-	}
-	message := <-messageQueue
 
 	if r.debug {
 		log.Printf("SERVER: Found message with %d bytes:\n%s\n", len(message.Data), string(message.Data))

@@ -17,7 +17,6 @@ func usage() {
 func main() {
 	var port uint
 
-	flag.UintVar(&port, "p", 5555, "The port to listen on")
 	flag.UintVar(&port, "port", 5555, "The port to listen on")
 	flag.Usage = usage
 	flag.Parse()

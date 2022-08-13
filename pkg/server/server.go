@@ -69,15 +69,6 @@ func (s *Server) Run() error {
 }
 
 func (s *Server) fetchAndRelay() error {
-	relayConn, err := net.Dial("tcp", s.relayAddress)
-	if err != nil {
-		return fmt.Errorf("error connecting to relay: %s", err.Error())
-	}
-	if s.debug {
-		log.Printf("Connected to relay at %s\n", s.relayAddress)
-	}
-	defer relayConn.Close()
-
 	serverConn, err := net.Dial("tcp", s.serverAddress)
 	if err != nil {
 		return fmt.Errorf("error connecting to server: %s", err.Error())
@@ -86,6 +77,15 @@ func (s *Server) fetchAndRelay() error {
 		log.Printf("Connected to server at %s\n", s.serverAddress)
 	}
 	defer serverConn.Close()
+
+	relayConn, err := net.Dial("tcp", s.relayAddress)
+	if err != nil {
+		return fmt.Errorf("error connecting to relay: %s", err.Error())
+	}
+	if s.debug {
+		log.Printf("Connected to relay at %s\n", s.relayAddress)
+	}
+	defer relayConn.Close()
 
 	if s.debug {
 		log.Println("Ready to relay")
