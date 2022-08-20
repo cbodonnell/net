@@ -6,7 +6,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/cbodonnell/tcp-queue/pkg/relay"
+	"github.com/cbodonnell/tcp-queue/pkg/tcp/relay"
 )
 
 func RelayCmd() {

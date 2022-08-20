@@ -6,7 +6,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/cbodonnell/tcp-queue/pkg/client"
+	"github.com/cbodonnell/tcp-queue/pkg/tcp/client"
 )
 
 var key = []byte("passphrasewhichneedstobe32bytes!")

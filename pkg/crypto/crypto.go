@@ -20,7 +20,6 @@ type Cipher interface {
 type AESCipher struct {
 	gcm     cipher.AEAD
 	bufSize uint
-	// TODO: Configurable buffer size
 }
 
 type AESCipherOpts struct {
