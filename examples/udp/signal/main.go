@@ -9,7 +9,6 @@ import (
 	"time"
 )
 
-// TODO: Should this be a map of servers and their client list? Could relay responses to all clients.
 var clients = make(map[string]string)
 
 var servers = make(map[string]string)
@@ -128,8 +127,9 @@ func monitor(conn *net.UDPConn, target string, ping chan *net.UDPAddr) {
 			delete(servers, target)
 			fmt.Printf("[UNREGISTER] %s unregistered after timeout\n", target)
 			return
-		case <-ping:
+		case server := <-ping:
 			fmt.Printf("[PING] %s\n", target)
+			conn.WriteTo([]byte(fmt.Sprintf("PONG: %s", target)), server)
 		}
 	}
 }

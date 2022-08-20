@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -22,100 +23,134 @@ func main() {
 	}
 	name := os.Args[2]
 
-	remote, err := net.ResolveUDPAddr("udp", signalAddr)
+	signal, err := net.ResolveUDPAddr("udp", signalAddr)
 	if err != nil {
 		log.Fatalf("Failed to resolve remote address: %s", err)
 	}
-	// local, err := net.ResolveUDPAddr("udp", localAddr)
-	// if err != nil {
-	// 	log.Fatalf("Failed to resolve local address: %s", err)
-	// }
+
+	if err := registerAndServe(signal, name); err != nil {
+		log.Fatalf("Failed to register and serve: %s", err)
+	}
+}
+
+func registerAndServe(signalAddr *net.UDPAddr, name string) error {
 	listen, err := net.ListenUDP("udp", nil)
 	if err != nil {
-		log.Fatalf("Failed to listen: %s", err)
+		return fmt.Errorf("failed to listen: %s", err)
 	}
 	defer listen.Close()
 
-	if err = register(listen, remote, name); err != nil {
-		log.Fatalf("Failed to register: %s", err)
-	}
-
-	go func() {
-		for {
-			if err = ping(listen, remote, name); err != nil {
-				log.Fatalf("Failed to ping: %s", err)
-			}
-			time.Sleep(time.Second * 5)
-		}
-	}()
-
 	fmt.Printf("Listening on %s\n", listen.LocalAddr().String())
 
+	registerChan := make(chan string)
+	pongChan := make(chan struct{})
+
+	// Read messages
+	go func(registerChan chan<- string, pongChan chan<- struct{}) {
+		for {
+			buffer := make([]byte, 1024)
+			bytesRead, remoteAddr, err := listen.ReadFromUDP(buffer)
+			if err != nil {
+				fmt.Printf("[ERROR] Failed to read from UDP: %s\n", err.Error())
+				continue
+			}
+			message := buffer[:bytesRead]
+
+			fmt.Printf("[INCOMING] from %s:\n%s\n", remoteAddr.String(), string(message))
+
+			switch remoteAddr.String() {
+			case signalAddr.String():
+				if err := handleSignalServerMessage(message, registerChan, pongChan); err != nil {
+					fmt.Printf("failed to handle signal server message: %s\n", err)
+					continue
+				}
+			default:
+				// Handle other messages
+				_, err = listen.WriteToUDP(message, remoteAddr)
+				if err != nil {
+					fmt.Printf("[ERROR] Failed to write to %s: %s\n", remoteAddr.String(), err.Error())
+					continue
+				}
+			}
+
+		}
+	}(registerChan, pongChan)
+
+	// Register with the signal server
+	signalErrChan := make(chan error)
+
 	for {
-		buffer := make([]byte, 1024)
-		bytesRead, remoteAddr, err := listen.ReadFromUDP(buffer)
-		if err != nil {
-			fmt.Printf("[ERROR] Failed to read from UDP: %s\n", err.Error())
-			continue
-		}
-		message := buffer[:bytesRead]
+		fmt.Printf("Registering with signal server %s\n", signalAddr.String())
+		go func(signalErrChan chan<- error) {
+			err := register(listen, signalAddr, name)
+			if err != nil {
+				signalErrChan <- fmt.Errorf("failed to register: %s", err.Error())
+				return
+			}
 
-		fmt.Printf("[INCOMING] from %s:\n%s\n", remoteAddr.String(), string(message))
+			select {
+			case <-time.After(time.Second * 5):
+				signalErrChan <- errors.New("registration timeout")
+				return
+			case target := <-registerChan:
+				fmt.Printf("Registered as %s\n", target)
+			}
 
-		_, err = listen.WriteToUDP(message, remoteAddr)
-		if err != nil {
-			fmt.Printf("[ERROR] Failed to write to %s: %s\n", remoteAddr.String(), err.Error())
-			continue
-		}
+			for {
+				time.Sleep(time.Second * 5)
+				if err := ping(listen, signalAddr, name); err != nil {
+					signalErrChan <- fmt.Errorf("failed to ping: %s", err)
+					return
+				}
+				select {
+				case <-time.After(time.Second * 5):
+					signalErrChan <- errors.New("ping timeout")
+					return
+				case <-pongChan:
+				}
+			}
+		}(signalErrChan)
+		err := <-signalErrChan
+		fmt.Printf("failed to connect to signal server: %s\n", err.Error())
+		time.Sleep(time.Second * 5)
 	}
 }
 
 func register(listen *net.UDPConn, remoteAddr *net.UDPAddr, name string) error {
-	fmt.Printf("Registering with signal server %s\n", remoteAddr.String())
-
-	listen.SetDeadline(time.Now().Add(time.Second * 5))
-	defer listen.SetDeadline(time.Time{})
-
 	_, err := listen.WriteTo([]byte(fmt.Sprintf("REGISTER: %s", name)), remoteAddr)
 	if err != nil {
 		return fmt.Errorf("failed to write to signal server %s: %s", remoteAddr.String(), err.Error())
 	}
 
-	buffer := make([]byte, 1024)
-	n, _, err := listen.ReadFromUDP(buffer)
+	return nil
+}
+
+func ping(listen *net.UDPConn, remoteAddr *net.UDPAddr, name string) error {
+	_, err := listen.WriteTo([]byte(fmt.Sprintf("PING: %s", name)), remoteAddr)
 	if err != nil {
-		return fmt.Errorf("failed to read from signal server %s: %s", remoteAddr.String(), err.Error())
+		return fmt.Errorf("failed to write to signal server %s: %s", remoteAddr.String(), err.Error())
 	}
 
-	response := string(buffer[:n])
+	return nil
+}
 
-	parts := strings.Split(response, ": ")
+func handleSignalServerMessage(message []byte, registerChan chan<- string, pongChan chan<- struct{}) error {
+	parts := strings.Split(string(message), ": ")
 	if len(parts) != 2 {
-		return fmt.Errorf("invalid response from signal server %s: %s", remoteAddr.String(), response)
+		return fmt.Errorf("invalid message from signal server: %s", string(message))
 	}
 	action, target := parts[0], parts[1]
 
 	switch action {
 	case "SUCCESS":
-		fmt.Printf("Registered as %s\n", target)
-		return nil
+		registerChan <- target
+	case "PONG":
+		pongChan <- struct{}{}
 	case "FAIL":
-		return fmt.Errorf("failed to register as %s: %s", name, target)
+		return fmt.Errorf("failure message from signal server: %s", target)
 	default:
-		return fmt.Errorf("unknown action: %s", action)
+		return fmt.Errorf("unknown action from signal server: %s", action)
 	}
-}
-
-func ping(listen *net.UDPConn, remoteAddr *net.UDPAddr, name string) error {
-	listen.SetDeadline(time.Now().Add(time.Second * 5))
-	defer listen.SetDeadline(time.Time{})
-
-	_, err := listen.WriteTo([]byte(fmt.Sprintf("PING: %s", name)), remoteAddr)
-	if err != nil {
-		return fmt.Errorf("failed to write to signal server %s: %s", remoteAddr.String(), err.Error())
-	}
-	// TODO: Need to read something from here to make sure the ping was successful
-	// Maybe can add a switch statement on thew remoteAddr.String() to handle different senders
 
 	return nil
 }
