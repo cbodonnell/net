@@ -4,24 +4,24 @@ import (
 	"log"
 	"os"
 
-	"github.com/cbodonnell/tcp-queue/cmd/client"
-	"github.com/cbodonnell/tcp-queue/cmd/relay"
-	"github.com/cbodonnell/tcp-queue/cmd/server"
+	"github.com/cbodonnell/net/cmd/commands"
 )
 
 func main() {
 	if len(os.Args) < 2 {
-		log.Fatalf("Usage: %s <command>\n", os.Args[0])
+		log.Fatalf("Usage: %s <command[client|relay|server]>\n", os.Args[0])
 	}
 
-	switch os.Args[1] {
+	command := os.Args[1]
+
+	switch command {
 	case "client":
-		client.ClientCmd()
+		log.Fatal(commands.ClientCmd())
 	case "server":
-		server.ServerCmd()
+		log.Fatal(commands.ServerCmd())
 	case "relay":
-		relay.RelayCmd()
+		log.Fatal(commands.RelayCmd())
 	default:
-		log.Fatalf("Unknown command: %s\n", os.Args[1])
+		log.Fatalf("Unknown command: %s\n", command)
 	}
 }

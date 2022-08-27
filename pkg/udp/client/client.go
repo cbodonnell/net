@@ -1,4 +1,4 @@
-package main
+package client
 
 import (
 	"errors"
@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cbodonnell/tcp-queue/pkg/crypto"
+	"github.com/cbodonnell/net/pkg/crypto"
 )
 
 type UDPClient struct {
@@ -52,16 +52,6 @@ func (c *UDPClient) Run() error {
 		return fmt.Errorf("failed to resolve relay address: %s", err.Error())
 	}
 
-	relayListener, err := net.ListenUDP("udp", nil)
-	if err != nil {
-		return fmt.Errorf("failed to listen for relay: %s", err.Error())
-	}
-	defer relayListener.Close()
-
-	if c.debug {
-		fmt.Printf("Listening for relay responses on %s\n", relayAddr.String())
-	}
-
 	portString := fmt.Sprintf(":%d", c.port)
 
 	listenAddr, err := net.ResolveUDPAddr("udp4", portString)
@@ -83,17 +73,18 @@ func (c *UDPClient) Run() error {
 		fmt.Printf("Punching to client %s on signal server %s\n", c.serverName, relayAddr.String())
 	}
 
-	target, err := c.punch(relayListener, relayAddr)
+	target, err := c.punch(relayAddr)
 	if err != nil {
 		return fmt.Errorf("failed to punch: %s", err.Error())
 	}
 	// TODO: Implement a fallback mechanism when punching fails
+	// TODO: The client should be "aware" if it is punched or relayed
 
 	if c.debug {
 		fmt.Printf("Punched to target %s\n", target.String())
 	}
 
-	go c.handleClientConnections(clientListener, relayListener, target)
+	go c.handleClientConnections(clientListener, target)
 
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt)
@@ -101,16 +92,22 @@ func (c *UDPClient) Run() error {
 	return errors.New("interrupted")
 }
 
-func (c *UDPClient) punch(relayListener *net.UDPConn, relayAddr *net.UDPAddr) (*net.UDPAddr, error) {
-	_, err := relayListener.WriteTo([]byte(fmt.Sprintf("PUNCH: %s", c.serverName)), relayAddr)
+func (c *UDPClient) punch(relayAddr *net.UDPAddr) (*net.UDPAddr, error) {
+	// dial to relay address
+	relayConn, err := net.DialUDP("udp", nil, relayAddr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to dial relay: %s", err.Error())
+	}
+
+	_, err = relayConn.Write([]byte(fmt.Sprintf("PUNCH: %s", c.serverName)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to write to relay: %s", err.Error())
 	}
 
-	relayListener.SetReadDeadline(time.Now().Add(time.Second * 5))
+	relayConn.SetReadDeadline(time.Now().Add(time.Second * 5))
 
 	buffer := make([]byte, 1024)
-	n, _, err := relayListener.ReadFromUDP(buffer)
+	n, _, err := relayConn.ReadFromUDP(buffer)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read from relay: %s", err.Error())
 	}
@@ -137,17 +134,17 @@ func (c *UDPClient) punch(relayListener *net.UDPConn, relayAddr *net.UDPAddr) (*
 	}
 }
 
-func (c *UDPClient) handleClientConnections(clientListener, targetListener *net.UDPConn, target *net.UDPAddr) {
+func (c *UDPClient) handleClientConnections(clientListener *net.UDPConn, target *net.UDPAddr) {
 	for {
-		if err := c.handleRequest(clientListener, targetListener, target); err != nil {
+		if err := c.handleRequest(clientListener, target); err != nil {
 			fmt.Fprintf(os.Stderr, "error handling request: %s\n", err.Error())
 		}
 	}
 }
 
-func (c *UDPClient) handleRequest(clientListener, targetListener *net.UDPConn, target *net.UDPAddr) error {
+func (c *UDPClient) handleRequest(clientListener *net.UDPConn, target *net.UDPAddr) error {
 	buffer := make([]byte, c.bufferSize)
-	n, remoteAddr, err := clientListener.ReadFromUDP(buffer)
+	n, clientAddr, err := clientListener.ReadFromUDP(buffer)
 	if err != nil {
 		return fmt.Errorf("failed to read from client: %s", err.Error())
 	}
@@ -155,23 +152,28 @@ func (c *UDPClient) handleRequest(clientListener, targetListener *net.UDPConn, t
 	message := buffer[:n]
 
 	if c.debug {
-		fmt.Printf("Received %d bytes from %s:\n%s\n", n, remoteAddr.String(), string(message))
+		fmt.Printf("Received %d bytes from %s:\n%s\n", n, clientAddr.String(), string(message))
 	}
 
-	_, err = clientListener.WriteTo(message, target)
+	targetConn, err := net.DialUDP("udp", nil, target)
+	if err != nil {
+		return fmt.Errorf("failed to dial target: %s", err.Error())
+	}
+
+	_, err = targetConn.Write(message)
 	if err != nil {
 		return fmt.Errorf("failed to write to target: %s", err.Error())
 	}
 
 	buffer = make([]byte, c.bufferSize)
-	n, remoteAddr, err = targetListener.ReadFromUDP(buffer)
+	n, _, err = targetConn.ReadFromUDP(buffer)
 	if err != nil {
 		return fmt.Errorf("failed to read from target: %s", err.Error())
 	}
 
 	response := buffer[:n]
 
-	_, err = clientListener.WriteTo(response, remoteAddr)
+	_, err = clientListener.WriteTo(response, clientAddr)
 	if err != nil {
 		return fmt.Errorf("failed to write to client: %s", err.Error())
 	}

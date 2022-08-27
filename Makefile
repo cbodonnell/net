@@ -1,2 +1,2 @@
 build:
-	go build -o bin/tunnel cmd/main.go
+	go build -o bin/net cmd/main.go

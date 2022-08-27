@@ -1,3 +1,3 @@
-module github.com/cbodonnell/tcp-queue
+module github.com/cbodonnell/net
 
 go 1.18

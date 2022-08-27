@@ -16,14 +16,14 @@ type Relay struct {
 	debug      bool
 }
 
-type RelayOpts struct {
+type TCPRelayOpts struct {
 	ClientPort uint
 	ServerPort uint
 	BufferSize uint
 	Debug      bool
 }
 
-func NewRelay(opts RelayOpts) *Relay {
+func NewTCPRelay(opts TCPRelayOpts) *Relay {
 	return &Relay{
 		clientPort: opts.ClientPort,
 		serverPort: opts.ServerPort,

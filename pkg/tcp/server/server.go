@@ -9,7 +9,7 @@ import (
 	"os/signal"
 	"time"
 
-	"github.com/cbodonnell/tcp-queue/pkg/crypto"
+	"github.com/cbodonnell/net/pkg/crypto"
 )
 
 type Server struct {
@@ -20,7 +20,7 @@ type Server struct {
 	debug         bool
 }
 
-type ServerOpts struct {
+type TCPServerOpts struct {
 	RelayAddress  string
 	ServerAddress string
 	Key           []byte
@@ -28,7 +28,7 @@ type ServerOpts struct {
 	Debug         bool
 }
 
-func NewServer(opts ServerOpts) (*Server, error) {
+func NewTCPServer(opts TCPServerOpts) (*Server, error) {
 	cipher, err := crypto.NewAESCipher(crypto.AESCipherOpts{Key: opts.Key})
 	if err != nil {
 		return nil, fmt.Errorf("error creating cipher: %s", err.Error())
