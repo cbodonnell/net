@@ -160,7 +160,16 @@ func (c *UDPClient) handleRequest(clientListener *net.UDPConn, target *net.UDPAd
 		return fmt.Errorf("failed to dial target: %s", err.Error())
 	}
 
-	_, err = targetConn.Write(message)
+	encryptedMessage, err := c.cipher.Encrypt(message)
+	if err != nil {
+		return fmt.Errorf("failed to encrypt message: %s", err.Error())
+	}
+
+	if c.debug {
+		fmt.Printf("Sending %d bytes to %s:\n%s\n", len(encryptedMessage), target.String(), string(encryptedMessage))
+	}
+
+	_, err = targetConn.Write(encryptedMessage)
 	if err != nil {
 		return fmt.Errorf("failed to write to target: %s", err.Error())
 	}
@@ -173,7 +182,12 @@ func (c *UDPClient) handleRequest(clientListener *net.UDPConn, target *net.UDPAd
 
 	response := buffer[:n]
 
-	_, err = clientListener.WriteTo(response, clientAddr)
+	decryptedResponse, err := c.cipher.Decrypt(response)
+	if err != nil {
+		return fmt.Errorf("failed to decrypt response: %s", err.Error())
+	}
+
+	_, err = clientListener.WriteTo(decryptedResponse, clientAddr)
 	if err != nil {
 		return fmt.Errorf("failed to write to client: %s", err.Error())
 	}

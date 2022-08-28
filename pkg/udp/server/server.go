@@ -57,12 +57,17 @@ func NewUDPServer(opts UDPServerOpts) (*UDPServer, error) {
 func (s *UDPServer) Run() error {
 	relayAddr, err := net.ResolveUDPAddr("udp", s.relayAddress)
 	if err != nil {
-		return fmt.Errorf("failed to resolve remote address: %s", err)
+		return fmt.Errorf("failed to resolve relay address: %s", err)
+	}
+
+	serverAddr, err := net.ResolveUDPAddr("udp", s.serverAddress)
+	if err != nil {
+		return fmt.Errorf("failed to resolve server address: %s", err)
 	}
 
 	go func() {
 		for {
-			if err := s.registerAndServe(relayAddr); err != nil {
+			if err := s.registerAndServe(relayAddr, serverAddr); err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to register and serve: %s", err.Error())
 				fmt.Fprintf(os.Stderr, "Retrying in %s\n", s.retryDuration)
 				time.Sleep(s.retryDuration)
@@ -76,7 +81,7 @@ func (s *UDPServer) Run() error {
 	return errors.New("interrupted")
 }
 
-func (s *UDPServer) registerAndServe(relayAddr *net.UDPAddr) error {
+func (s *UDPServer) registerAndServe(relayAddr, serverAddr *net.UDPAddr) error {
 	listen, err := net.ListenUDP("udp", nil)
 	if err != nil {
 		return fmt.Errorf("failed to listen: %s", err)
@@ -84,6 +89,12 @@ func (s *UDPServer) registerAndServe(relayAddr *net.UDPAddr) error {
 	defer listen.Close()
 
 	fmt.Printf("Listening on %s\n", listen.LocalAddr().String())
+
+	serverConn, err := net.DialUDP("udp", nil, serverAddr)
+	if err != nil {
+		return fmt.Errorf("failed to connect to server: %s", err)
+	}
+	defer serverConn.Close()
 
 	registerChan := make(chan string)
 	pongChan := make(chan struct{})
@@ -108,9 +119,35 @@ func (s *UDPServer) registerAndServe(relayAddr *net.UDPAddr) error {
 					continue
 				}
 			default:
-				// Handle other messages
-				// TODO: Change this to a roundtrip to the server application (dial)
-				_, err = listen.WriteToUDP(message, remoteAddr)
+				decryptedMessage, err := s.cipher.Decrypt(message)
+				if err != nil {
+					fmt.Printf("[ERROR] Failed to decrypt message: %s\n", err.Error())
+					continue
+				}
+
+				// Send the message to the server
+				if _, err := serverConn.Write(decryptedMessage); err != nil {
+					fmt.Printf("failed to write to server: %s\n", err)
+					continue
+				}
+
+				// Read the response from the server
+				buffer := make([]byte, 1024)
+				_, err = serverConn.Read(buffer)
+				if err != nil {
+					fmt.Printf("failed to read from server: %s\n", err)
+					continue
+				}
+
+				response := buffer[:n]
+
+				encryptedResponse, err := s.cipher.Encrypt(response)
+				if err != nil {
+					fmt.Printf("failed to encrypt response: %s\n", err)
+					continue
+				}
+
+				_, err = listen.WriteToUDP(encryptedResponse, remoteAddr)
 				if err != nil {
 					fmt.Printf("[ERROR] Failed to write to %s: %s\n", remoteAddr.String(), err.Error())
 					continue
