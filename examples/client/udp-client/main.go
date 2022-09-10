@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/signal"
 	"strings"
 )
 
@@ -17,37 +18,47 @@ func main() {
 	CONNECT := arguments[1]
 
 	s, err := net.ResolveUDPAddr("udp4", CONNECT)
-	c, err := net.DialUDP("udp4", nil, s)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 
-	fmt.Printf("The UDP server is %s\n", c.RemoteAddr().String())
+	c, err := net.DialUDP("udp4", nil, s)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
 	defer c.Close()
 
-	for {
-		reader := bufio.NewReader(os.Stdin)
-		fmt.Print(">> ")
-		text, _ := reader.ReadString('\n')
-		data := []byte(strings.TrimSuffix(text, "\n"))
-		_, err = c.Write(data)
-		if strings.TrimSpace(string(data)) == "STOP" {
-			fmt.Println("Exiting UDP client!")
-			return
-		}
+	fmt.Printf("Connecting to %s\n", s.String())
 
-		if err != nil {
-			fmt.Println(err)
-			return
+	go func() {
+		for {
+			buffer := make([]byte, 1024)
+			n, err := c.Read(buffer)
+			if err != nil {
+				fmt.Println(err)
+				continue
+			}
+			fmt.Printf("-> %s\n", string(buffer[0:n]))
 		}
+	}()
 
-		buffer := make([]byte, 1024)
-		n, _, err := c.ReadFromUDP(buffer)
-		if err != nil {
-			fmt.Println(err)
-			return
+	go func() {
+		for {
+			reader := bufio.NewReader(os.Stdin)
+			text, _ := reader.ReadString('\n')
+			data := []byte(strings.TrimSuffix(text, "\n"))
+			_, err = c.Write(data)
+			if err != nil {
+				fmt.Println(err)
+				continue
+			}
 		}
-		fmt.Printf("Reply:\n%s\n", string(buffer[0:n]))
-	}
+	}()
+
+	interrupt := make(chan os.Signal, 1)
+	signal.Notify(interrupt, os.Interrupt)
+	<-interrupt
+	fmt.Println("Shutting down...")
 }

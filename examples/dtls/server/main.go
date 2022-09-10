@@ -8,12 +8,19 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net"
+	"os"
+	"os/signal"
 	"path"
+	"sync"
 	"time"
 
 	"github.com/pion/dtls/v2"
-	"github.com/pion/dtls/v2/examples/util"
 )
+
+var realAddr = &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5555}
+
+var clients = make(map[string]net.Conn)
+var lock sync.RWMutex
 
 func main() {
 	// Prepare the IP to connect to
@@ -76,34 +83,107 @@ func main() {
 
 	// Connect to a DTLS server
 	listener, err := dtls.Listen("udp", addr, config)
-	util.Check(err)
-	defer func() {
-		util.Check(listener.Close())
-	}()
+	if err != nil {
+		panic(err)
+	}
+	defer listener.Close()
 
-	fmt.Println("Listening")
+	fmt.Printf("Listening on %s\n", addr)
 
-	// Simulate a chat session
-	hub := util.NewHub()
+	// Dial to the real server
+	realConn, err := net.DialUDP("udp", nil, realAddr)
+	if err != nil {
+		panic(err)
+	}
+	defer realConn.Close()
+
+	fmt.Printf("Dialing to %s\n", realAddr)
 
 	go func() {
 		for {
-			// Wait for a connection.
-			conn, err := listener.Accept()
-			util.Check(err)
-			// defer conn.Close() // TODO: graceful shutdown
+			clientConn, err := listener.Accept()
+			if err != nil {
+				panic(err)
+			}
 
-			// `conn` is of type `net.Conn` but may be casted to `dtls.Conn`
-			// using `dtlsConn := conn.(*dtls.Conn)` in order to to expose
-			// functions like `ConnectionState` etc.
+			fmt.Printf("Accepted connection from %s\n", clientConn.RemoteAddr())
 
-			// Register the connection with the chat hub
-			if err == nil {
-				hub.Register(conn)
+			// forward the connection to the real server
+			go registerConnection(clientConn, realConn)
+		}
+	}()
+
+	go func() {
+		for {
+			if err := broadcastReal(realConn); err != nil {
+				fmt.Printf("Error broadcasting real: %s\n", err)
+				return
 			}
 		}
 	}()
 
-	// Start chatting
-	hub.Chat()
+	interrupt := make(chan os.Signal, 1)
+	signal.Notify(interrupt, os.Interrupt)
+	<-interrupt
+	fmt.Println("Shutting down...")
+}
+
+func registerConnection(clientConn net.Conn, realConn *net.UDPConn) {
+	lock.Lock()
+	fmt.Printf("Registering connection from %s\n", clientConn.RemoteAddr())
+	clients[clientConn.RemoteAddr().String()] = clientConn
+	defer lock.Unlock()
+
+	go func() {
+		for {
+			if err := forwardClient(clientConn, realConn); err != nil {
+				fmt.Printf("Error forwarding client: %s\n", err)
+				unregisterConnection(clientConn)
+				return
+			}
+		}
+	}()
+}
+
+func unregisterConnection(clientConn net.Conn) {
+	lock.Lock()
+	fmt.Printf("Unregistering connection from %s\n", clientConn.RemoteAddr())
+	delete(clients, clientConn.RemoteAddr().String())
+	lock.Unlock()
+}
+
+func forwardClient(clientConn net.Conn, realConn *net.UDPConn) error {
+	buf := make([]byte, 1024)
+	n, err := clientConn.Read(buf)
+	if err != nil {
+		return err
+	}
+
+	_, err = realConn.Write(buf[:n])
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// broadcast real
+func broadcastReal(realConn *net.UDPConn) error {
+	buf := make([]byte, 1024)
+	n, err := realConn.Read(buf)
+	if err != nil {
+		return err
+	}
+
+	lock.RLock()
+	defer lock.RUnlock()
+	for _, clientConn := range clients {
+		_, err = clientConn.Write(buf[:n])
+		if err != nil {
+			fmt.Printf("Error broadcasting to client: %s\n", err)
+			go unregisterConnection(clientConn)
+		}
+	}
+
+	return nil
 }
