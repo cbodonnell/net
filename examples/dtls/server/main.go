@@ -5,11 +5,9 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
-	"fmt"
 	"io/ioutil"
+	"log"
 	"net"
-	"os"
-	"os/signal"
 	"path"
 	"sync"
 	"time"
@@ -36,15 +34,11 @@ func main() {
 		panic(err)
 	}
 
-	// serverKeyPem, _ := pem.Decode(serverKeyBytes)
-
 	// Read the client certificate from disk
 	serverCertBytes, err := ioutil.ReadFile(path.Join("examples/x509/server", "cert.pem"))
 	if err != nil {
 		panic(err)
 	}
-
-	// serverCertPem, _ := pem.Decode(serverCertBytes)
 
 	serverCert, err := tls.X509KeyPair(serverCertBytes, serverKeyBytes)
 	if err != nil {
@@ -75,7 +69,7 @@ func main() {
 		ExtendedMasterSecret: dtls.RequireExtendedMasterSecret,
 		// Create timeout context for accepted connection.
 		ConnectContextMaker: func() (context.Context, func()) {
-			return context.WithTimeout(ctx, 30*time.Second)
+			return context.WithDeadline(ctx, time.Now().Add(time.Second*60))
 		},
 		ClientAuth: dtls.RequireAndVerifyClientCert,
 		ClientCAs:  roots,
@@ -88,7 +82,7 @@ func main() {
 	}
 	defer listener.Close()
 
-	fmt.Printf("Listening on %s\n", addr)
+	log.Printf("Listening on %s\n", addr)
 
 	// Dial to the real server
 	realConn, err := net.DialUDP("udp", nil, realAddr)
@@ -97,93 +91,76 @@ func main() {
 	}
 	defer realConn.Close()
 
-	fmt.Printf("Dialing to %s\n", realAddr)
+	log.Printf("Dialing to %s\n", realAddr)
 
-	go func() {
+	go func(realConn net.Conn) error {
 		for {
-			clientConn, err := listener.Accept()
+			log.Printf("Reading from %s\n", realConn.RemoteAddr())
+			buf := make([]byte, 1024)
+			n, err := realConn.Read(buf)
 			if err != nil {
-				panic(err)
+				return err
 			}
 
-			fmt.Printf("Accepted connection from %s\n", clientConn.RemoteAddr())
-
-			// forward the connection to the real server
-			go registerConnection(clientConn, realConn)
+			broadcast(buf[:n])
 		}
-	}()
+	}(realConn)
 
-	go func() {
-		for {
-			if err := broadcastReal(realConn); err != nil {
-				fmt.Printf("Error broadcasting real: %s\n", err)
-				return
+	for {
+		clientConn, err := listener.Accept()
+		if err != nil {
+			panic(err)
+		}
+
+		log.Printf("Accepted connection from %s\n", clientConn.RemoteAddr())
+
+		register(clientConn)
+
+		go func() error {
+			for {
+				log.Printf("Reading from %s\n", clientConn.RemoteAddr())
+				buf := make([]byte, 1024)
+				n, err := clientConn.Read(buf)
+				if err != nil {
+					unregister(clientConn)
+					return err
+				}
+
+				log.Printf("Writing to %s\n", realConn.RemoteAddr())
+				_, err = realConn.Write(buf[:n])
+				if err != nil {
+					return err
+				}
 			}
-		}
-	}()
-
-	interrupt := make(chan os.Signal, 1)
-	signal.Notify(interrupt, os.Interrupt)
-	<-interrupt
-	fmt.Println("Shutting down...")
+		}()
+	}
 }
 
-func registerConnection(clientConn net.Conn, realConn *net.UDPConn) {
+func register(conn net.Conn) {
 	lock.Lock()
-	fmt.Printf("Registering connection from %s\n", clientConn.RemoteAddr())
-	clients[clientConn.RemoteAddr().String()] = clientConn
 	defer lock.Unlock()
-
-	go func() {
-		for {
-			if err := forwardClient(clientConn, realConn); err != nil {
-				fmt.Printf("Error forwarding client: %s\n", err)
-				unregisterConnection(clientConn)
-				return
-			}
-		}
-	}()
+	clients[conn.RemoteAddr().String()] = conn
+	log.Println("Registered", conn.RemoteAddr())
 }
 
-func unregisterConnection(clientConn net.Conn) {
+func unregister(conn net.Conn) {
 	lock.Lock()
-	fmt.Printf("Unregistering connection from %s\n", clientConn.RemoteAddr())
-	delete(clients, clientConn.RemoteAddr().String())
-	lock.Unlock()
+	defer lock.Unlock()
+	delete(clients, conn.RemoteAddr().String())
+	err := conn.Close()
+	if err != nil {
+		log.Println("Failed to disconnect", conn.RemoteAddr(), err)
+	} else {
+		log.Println("Disconnected ", conn.RemoteAddr())
+	}
 }
 
-func forwardClient(clientConn net.Conn, realConn *net.UDPConn) error {
-	buf := make([]byte, 1024)
-	n, err := clientConn.Read(buf)
-	if err != nil {
-		return err
-	}
-
-	_, err = realConn.Write(buf[:n])
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// broadcast real
-func broadcastReal(realConn *net.UDPConn) error {
-	buf := make([]byte, 1024)
-	n, err := realConn.Read(buf)
-	if err != nil {
-		return err
-	}
-
+func broadcast(msg []byte) {
 	lock.RLock()
 	defer lock.RUnlock()
-	for _, clientConn := range clients {
-		_, err = clientConn.Write(buf[:n])
-		if err != nil {
-			fmt.Printf("Error broadcasting to client: %s\n", err)
-			go unregisterConnection(clientConn)
+	for _, conn := range clients {
+		if _, err := conn.Write(msg); err != nil {
+			log.Printf("Failed to write to %s\n", conn.RemoteAddr().String())
 		}
 	}
-
-	return nil
 }

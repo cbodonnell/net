@@ -5,21 +5,20 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
-	"fmt"
 	"io/ioutil"
+	"log"
 	"net"
-	"os"
-	"os/signal"
 	"path"
 	"sync"
 	"time"
 
 	"github.com/pion/dtls/v2"
+	"github.com/pion/udp"
 )
 
 var listenRealAddr = &net.UDPAddr{IP: net.ParseIP(""), Port: 3333}
 
-var clients = make(map[string]*net.UDPAddr)
+var clients = make(map[string]net.Conn)
 var lock sync.RWMutex
 
 func main() {
@@ -32,15 +31,11 @@ func main() {
 		panic(err)
 	}
 
-	// clientKeyPem, _ := pem.Decode(clientKeyBytes)
-
 	// Read the client certificate from disk
 	clientCertBytes, err := ioutil.ReadFile(path.Join("examples/x509/client", "cert.pem"))
 	if err != nil {
 		panic(err)
 	}
-
-	// clientCertPem, _ := pem.Decode(clientCertBytes)
 
 	clientCert, err := tls.X509KeyPair(clientCertBytes, clientKeyBytes)
 	if err != nil {
@@ -74,7 +69,7 @@ func main() {
 	}
 
 	// Connect to a DTLS server
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
 	defer cancel()
 	targetConn, err := dtls.DialWithContext(ctx, "udp", targetAddr, config)
 	if err != nil {
@@ -82,94 +77,87 @@ func main() {
 	}
 	defer targetConn.Close()
 
-	fmt.Printf("Connected to %s\n", targetConn.RemoteAddr())
+	log.Printf("Connected to %s\n", targetConn.RemoteAddr())
 
 	// Listen for incoming connections from the real client
-	realConn, err := net.ListenUDP("udp", listenRealAddr)
+	listenReal, err := udp.Listen("udp", listenRealAddr)
 	if err != nil {
 		panic(err)
 	}
-	defer realConn.Close()
+	defer listenReal.Close()
 
-	fmt.Printf("Listening on %s\n", realConn.LocalAddr())
+	log.Printf("Listening on %s\n", listenReal.Addr())
 
-	go func() {
+	go func(targetConn net.Conn) error {
 		for {
-			if err := forwardReal(realConn, targetConn); err != nil {
-				fmt.Printf("Error round-tripping real: %s\n", err)
-				return
+			log.Printf("Reading from %s\n", targetConn.RemoteAddr())
+			buf := make([]byte, 1024)
+			n, err := targetConn.Read(buf)
+			if err != nil {
+				return err
 			}
-		}
-	}()
 
-	go func() {
-		for {
-			if err := broadcastTarget(targetConn, realConn); err != nil {
-				fmt.Printf("Error round-tripping target: %s\n", err)
-				return
+			broadcast(buf[:n])
+		}
+	}(targetConn)
+
+	for {
+		realConn, err := listenReal.Accept()
+		if err != nil {
+			panic(err)
+		}
+
+		log.Printf("Accepted connection from %s\n", realConn.RemoteAddr())
+
+		register(realConn)
+
+		go func() error {
+			for {
+				log.Printf("Reading from %s\n", realConn.RemoteAddr())
+				buf := make([]byte, 1024)
+				_ = realConn.SetReadDeadline(time.Now().Add(time.Second * 30))
+				n, err := realConn.Read(buf)
+				if err != nil {
+					unregister(realConn)
+					return err
+				}
+
+				log.Printf("Writing to %s\n", targetConn.RemoteAddr())
+				_, err = targetConn.Write(buf[:n])
+				if err != nil {
+					return err
+				}
 			}
-		}
-	}()
-
-	interrupt := make(chan os.Signal, 1)
-	signal.Notify(interrupt, os.Interrupt)
-	<-interrupt
-	fmt.Println("Shutting down...")
+		}()
+	}
 }
 
-func forwardReal(realConn *net.UDPConn, targetConn *dtls.Conn) error {
-	// read from the real client and send to the target
-	buf := make([]byte, 1024)
-	n, realAddr, err := realConn.ReadFromUDP(buf)
-	if err != nil {
-		return err
-	}
-
-	fmt.Printf("Received %d bytes from %s\n", n, realAddr.String())
-
+func register(conn net.Conn) {
 	lock.Lock()
 	defer lock.Unlock()
-	if _, ok := clients[realAddr.String()]; !ok {
-		fmt.Printf("Registering connection: %s\n", realAddr.String())
-		clients[realAddr.String()] = realAddr
-	}
-
-	// send to target
-	_, err = targetConn.Write(buf[:n])
-	if err != nil {
-		return err
-	}
-
-	return nil
+	clients[conn.RemoteAddr().String()] = conn
+	log.Println("Registered", conn.RemoteAddr())
 }
 
-func broadcastTarget(targetConn *dtls.Conn, realConn *net.UDPConn) error {
-	// read from the target and send to the real client
-	buf := make([]byte, 1024)
-	n, err := targetConn.Read(buf)
+func unregister(conn net.Conn) {
+	lock.Lock()
+	defer lock.Unlock()
+	delete(clients, conn.RemoteAddr().String())
+	err := conn.Close()
 	if err != nil {
-		return err
+		log.Println("Failed to disconnect", conn.RemoteAddr(), err)
+	} else {
+		log.Println("Disconnected ", conn.RemoteAddr())
 	}
+}
 
-	fmt.Printf("Received %d bytes from %s\n", n, targetConn.RemoteAddr())
-
+func broadcast(msg []byte) {
 	lock.RLock()
 	defer lock.RUnlock()
-	for _, realAddr := range clients {
-		fmt.Printf("Broadcasting %d bytes to %s\n", n, realAddr.String())
-		_, err = realConn.WriteToUDP(buf[:n], realAddr)
-		if err != nil {
-			fmt.Printf("Error broadcasting to client: %s\n", err)
-			go unregisterConnection(realAddr.String())
+	for _, conn := range clients {
+		log.Printf("Writing to %s\n", conn.RemoteAddr())
+		if _, err := conn.Write(msg); err != nil {
+			log.Printf("Failed to write to %s\n", conn.RemoteAddr().String())
 		}
 	}
-
-	return nil
-}
-
-func unregisterConnection(realAddr string) {
-	lock.Lock()
-	defer lock.Unlock()
-	fmt.Printf("Unregistering connection: %s\n", realAddr)
-	delete(clients, realAddr)
 }

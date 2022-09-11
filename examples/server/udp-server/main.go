@@ -2,15 +2,9 @@ package main
 
 import (
 	"fmt"
-	"math/rand"
 	"net"
 	"os"
-	"time"
 )
-
-func random(min, max int) int {
-	return rand.Intn(max-min) + min
-}
 
 func main() {
 	arguments := os.Args
@@ -36,7 +30,6 @@ func main() {
 
 	defer connection.Close()
 	buffer := make([]byte, 1024)
-	rand.Seed(time.Now().Unix())
 
 	for {
 		n, addr, err := connection.ReadFromUDP(buffer)
@@ -44,7 +37,7 @@ func main() {
 			fmt.Println(err)
 			return
 		}
-		fmt.Printf("-> %s\n", string(buffer[0:n]))
+		fmt.Printf("%s -> %s\n", addr.String(), string(buffer[0:n]))
 
 		_, err = connection.WriteToUDP(buffer[0:n], addr)
 		if err != nil {
