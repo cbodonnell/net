@@ -68,17 +68,6 @@ func main() {
 		ExtendedMasterSecret: dtls.RequireExtendedMasterSecret,
 	}
 
-	// Connect to a DTLS server
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
-	defer cancel()
-	targetConn, err := dtls.DialWithContext(ctx, "udp", targetAddr, config)
-	if err != nil {
-		panic(err)
-	}
-	defer targetConn.Close()
-
-	log.Printf("Connected to %s\n", targetConn.RemoteAddr())
-
 	// Listen for incoming connections from the real client
 	listenReal, err := udp.Listen("udp", listenRealAddr)
 	if err != nil {
@@ -88,19 +77,6 @@ func main() {
 
 	log.Printf("Listening on %s\n", listenReal.Addr())
 
-	go func(targetConn net.Conn) error {
-		for {
-			log.Printf("Reading from %s\n", targetConn.RemoteAddr())
-			buf := make([]byte, 1024)
-			n, err := targetConn.Read(buf)
-			if err != nil {
-				return err
-			}
-
-			broadcast(buf[:n])
-		}
-	}(targetConn)
-
 	for {
 		realConn, err := listenReal.Accept()
 		if err != nil {
@@ -109,9 +85,34 @@ func main() {
 
 		log.Printf("Accepted connection from %s\n", realConn.RemoteAddr())
 
+		// TODO: Make this part of the registered conn and close when unregistering
+		// Connect to a DTLS server
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
+		targetConn, err := dtls.DialWithContext(ctx, "udp", targetAddr, config)
+		if err != nil {
+			panic(err)
+		}
+
+		log.Printf("Connected to %s\n", targetConn.RemoteAddr())
+
 		register(realConn)
 
-		go func() error {
+		go func(targetConn net.Conn) error {
+			for {
+				log.Printf("Reading from %s\n", targetConn.RemoteAddr())
+				buf := make([]byte, 1024)
+				n, err := targetConn.Read(buf)
+				if err != nil {
+					return err
+				}
+
+				broadcast(buf[:n])
+			}
+		}(targetConn)
+
+		go func(realConn, targetConn net.Conn) error {
+			defer cancel()
+			defer targetConn.Close()
 			for {
 				log.Printf("Reading from %s\n", realConn.RemoteAddr())
 				buf := make([]byte, 1024)
@@ -128,7 +129,7 @@ func main() {
 					return err
 				}
 			}
-		}()
+		}(realConn, targetConn)
 	}
 }
 

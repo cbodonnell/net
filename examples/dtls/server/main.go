@@ -69,7 +69,7 @@ func main() {
 		ExtendedMasterSecret: dtls.RequireExtendedMasterSecret,
 		// Create timeout context for accepted connection.
 		ConnectContextMaker: func() (context.Context, func()) {
-			return context.WithDeadline(ctx, time.Now().Add(time.Second*60))
+			return context.WithDeadline(ctx, time.Now().Add(time.Second*30))
 		},
 		ClientAuth: dtls.RequireAndVerifyClientCert,
 		ClientCAs:  roots,
@@ -120,6 +120,7 @@ func main() {
 			for {
 				log.Printf("Reading from %s\n", clientConn.RemoteAddr())
 				buf := make([]byte, 1024)
+				_ = clientConn.SetReadDeadline(time.Now().Add(time.Second * 30))
 				n, err := clientConn.Read(buf)
 				if err != nil {
 					unregister(clientConn)
