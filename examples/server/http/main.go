@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -25,10 +24,21 @@ func main() {
 
 	log.Printf("Listening on %s\n", portString)
 
-	handler := func(w http.ResponseWriter, req *http.Request) {
-		io.WriteString(w, "Hello, world!\n")
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "%s %s %s\n", r.Method, r.URL, r.Proto)
+		for k, v := range r.Header {
+			fmt.Fprintf(w, "Header field %q, Value %q\n", k, v)
+		}
+		fmt.Fprintf(w, "Host = %q\n", r.Host)
+		fmt.Fprintf(w, "RemoteAddr= %q\n", r.RemoteAddr)
+		if err := r.ParseForm(); err != nil {
+			fmt.Fprintf(w, "ParseForm() err: %v", err)
+		}
+		for k, v := range r.Form {
+			fmt.Fprintf(w, "Form field %q, Value %q\n", k, v)
+		}
 	}
 
-	http.HandleFunc("/hello", handler)
+	http.HandleFunc("/", handler)
 	log.Fatal(http.ListenAndServe(portString, nil))
 }
