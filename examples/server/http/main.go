@@ -30,12 +30,12 @@ func main() {
 		var requestDump bytes.Buffer
 		// Write the request method, URL, and protocol
 		requestDump.WriteString(fmt.Sprintf("%s %s %s\r\n", r.Method, r.URL, r.Proto))
-		// Write the headers
+		// Write the Host header
+		requestDump.WriteString(fmt.Sprintf("Host: %s\r\n", r.Host))
+		// Write the rest of the headers
 		for k, v := range r.Header {
 			requestDump.WriteString(fmt.Sprintf("%s: %s\r\n", k, v[0]))
 		}
-		// Write the Host header
-		requestDump.WriteString(fmt.Sprintf("Host: %s\r\n", r.Host))
 		// Write the body
 		body, _ := ioutil.ReadAll(r.Body)
 		requestDump.Write(body)
