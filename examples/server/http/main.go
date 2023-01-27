@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -25,18 +27,20 @@ func main() {
 	log.Printf("Listening on %s\n", portString)
 
 	handler := func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "%s %s %s\n", r.Method, r.URL, r.Proto)
+		var requestDump bytes.Buffer
+		// Write the request method, URL, and protocol
+		requestDump.WriteString(fmt.Sprintf("%s %s %s\r\n", r.Method, r.URL, r.Proto))
+		// Write the headers
 		for k, v := range r.Header {
-			fmt.Fprintf(w, "Header field %q, Value %q\n", k, v)
+			requestDump.WriteString(fmt.Sprintf("%s: %s\r\n", k, v[0]))
 		}
-		fmt.Fprintf(w, "Host = %q\n", r.Host)
-		fmt.Fprintf(w, "RemoteAddr= %q\n", r.RemoteAddr)
-		if err := r.ParseForm(); err != nil {
-			fmt.Fprintf(w, "ParseForm() err: %v", err)
-		}
-		for k, v := range r.Form {
-			fmt.Fprintf(w, "Form field %q, Value %q\n", k, v)
-		}
+		// Write the Host header
+		requestDump.WriteString(fmt.Sprintf("Host: %s\r\n", r.Host))
+		// Write the body
+		body, _ := ioutil.ReadAll(r.Body)
+		requestDump.Write(body)
+		// Write the request to the response
+		w.Write(requestDump.Bytes())
 	}
 
 	http.HandleFunc("/", handler)
